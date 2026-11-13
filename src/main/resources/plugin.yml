@@ -1,0 +1,14 @@
+name: RewindPlugin
+version: 1.0.0
+main: com.xyron.rewind.RewindPlugin
+api-version: '1.13'
+description: Rewind players and block changes back in time.
+commands:
+  rewind:
+    description: Rewind time
+    aliases: [rw]
+    usage: /rewind <time> [all|world|players...]
+permissions:
+  rewind.use:
+    description: Use /rewind
+    default: op

@@ -1,220 +1,37 @@
-package com.xyron.rewind;
+name: Build RewindPlugin
 
-import org.bukkit.Bukkit;
-import org.bukkit.Location;
-import org.bukkit.Material;
-import org.bukkit.block.Block;
-import org.bukkit.block.BlockState;
-import org.bukkit.command.Command;
-import org.bukkit.command.CommandSender;
-import org.bukkit.entity.Player;
-import org.bukkit.plugin.java.JavaPlugin;
-import org.bukkit.scheduler.BukkitRunnable;
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
 
-import java.util.*;
+permissions:
+  contents: read
 
-public class RewindPlugin extends JavaPlugin {
+jobs:
+  build:
+    runs-on: ubuntu-latest
 
-    private final Map<UUID, List<PlayerSnapshot>> playerHistory = new HashMap<>();
-    private final List<BlockSnapshot> blockHistory = new ArrayList<>();
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-    private static final int MAX_HISTORY_SECONDS = 600;
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: temurin
+          cache: maven
 
-    @Override
-    public void onEnable() {
-        getLogger().info("RewindPlugin enabled!");
+      - name: Build with Maven
+        run: mvn -B clean package
 
-        new BukkitRunnable() {
-            @Override
-            public void run() {
-                savePlayerSnapshots();
-                cleanOldHistory();
-            }
-        }.runTaskTimer(this, 20L, 20L);
-
-        getServer().getPluginManager().registerEvents(
-                new org.bukkit.event.Listener() {
-                    @org.bukkit.event.EventHandler
-                    public void onBlockBreak(org.bukkit.event.block.BlockBreakEvent event) {
-                        saveBlock(event.getBlock());
-                    }
-
-                    @org.bukkit.event.EventHandler
-                    public void onBlockPlace(org.bukkit.event.block.BlockPlaceEvent event) {
-                        saveBlock(event.getBlock());
-                    }
-
-                    @org.bukkit.event.EventHandler
-                    public void onBlockBurn(org.bukkit.event.block.BlockBurnEvent event) {
-                        saveBlock(event.getBlock());
-                    }
-
-                    @org.bukkit.event.EventHandler
-                    public void onBlockExplode(org.bukkit.event.block.BlockExplodeEvent event) {
-                        for (Block block : event.blockList()) {
-                            saveBlock(block);
-                        }
-                    }
-
-                    @org.bukkit.event.EventHandler
-                    public void onEntityExplode(org.bukkit.event.entity.EntityExplodeEvent event) {
-                        for (Block block : event.blockList()) {
-                            saveBlock(block);
-                        }
-                    }
-                }, this
-        );
-    }
-
-    private void savePlayerSnapshots() {
-        for (Player player : Bukkit.getOnlinePlayers()) {
-            PlayerSnapshot snapshot = new PlayerSnapshot(
-                    player.getLocation().clone(),
-                    player.getHealth(),
-                    player.getFoodLevel(),
-                    player.getSaturation()
-            );
-
-            playerHistory.computeIfAbsent(player.getUniqueId(), k -> new ArrayList<>())
-                    .add(snapshot);
-        }
-    }
-
-    private void saveBlock(Block block) {
-        blockHistory.add(new BlockSnapshot(
-                System.currentTimeMillis(),
-                block.getState()
-        ));
-    }
-
-    private void cleanOldHistory() {
-        long cutoff = System.currentTimeMillis() - MAX_HISTORY_SECONDS * 1000L;
-
-        blockHistory.removeIf(snapshot -> snapshot.time < cutoff);
-
-        for (List<PlayerSnapshot> history : playerHistory.values()) {
-            while (!history.isEmpty()
-                    && history.get(0).time < cutoff) {
-                history.remove(0);
-            }
-        }
-    }
-
-    @Override
-    public boolean onCommand(
-            CommandSender sender,
-            Command command,
-            String label,
-            String[] args
-    ) {
-        if (!command.getName().equalsIgnoreCase("rewind")) {
-            return false;
-        }
-
-        if (!sender.hasPermission("rewind.use")) {
-            sender.sendMessage("§cYou don't have permission.");
-            return true;
-        }
-
-        if (args.length < 1) {
-            sender.sendMessage("§cUsage: /rewind <seconds>");
-            return true;
-        }
-
-        int seconds;
-
-        try {
-            seconds = Integer.parseInt(args[0]);
-        } catch (NumberFormatException exception) {
-            sender.sendMessage("§cEnter a valid number of seconds.");
-            return true;
-        }
-
-        if (seconds < 1 || seconds > MAX_HISTORY_SECONDS) {
-            sender.sendMessage("§cChoose between 1 and 600 seconds.");
-            return true;
-        }
-
-        long targetTime = System.currentTimeMillis() - seconds * 1000L;
-
-        int restoredBlocks = 0;
-        int restoredPlayers = 0;
-
-        ListIterator<BlockSnapshot> iterator =
-                blockHistory.listIterator(blockHistory.size());
-
-        while (iterator.hasPrevious()) {
-            BlockSnapshot snapshot = iterator.previous();
-
-            if (snapshot.time < targetTime) {
-                break;
-            }
-
-            snapshot.state.update(true, false);
-            iterator.remove();
-            restoredBlocks++;
-        }
-
-        for (Player player : Bukkit.getOnlinePlayers()) {
-            List<PlayerSnapshot> history =
-                    playerHistory.get(player.getUniqueId());
-
-            if (history == null || history.isEmpty()) {
-                continue;
-            }
-
-            PlayerSnapshot closest = null;
-
-            for (PlayerSnapshot snapshot : history) {
-                if (snapshot.time <= targetTime) {
-                    closest = snapshot;
-                } else {
-                    break;
-                }
-            }
-
-            if (closest != null) {
-                player.teleport(closest.location);
-                player.setHealth(Math.min(
-                        closest.health,
-                        player.getMaxHealth()
-                ));
-                player.setFoodLevel(closest.food);
-                player.setSaturation(closest.saturation);
-                restoredPlayers++;
-            }
-        }
-
-        sender.sendMessage("§aRewind complete!");
-        sender.sendMessage("§7Blocks restored: §f" + restoredBlocks);
-        sender.sendMessage("§7Players restored: §f" + restoredPlayers);
-
-        return true;
-    }
-
-    private static class PlayerSnapshot {
-        final long time;
-        final Location location;
-        final double health;
-        final int food;
-        final float saturation;
-
-        PlayerSnapshot(Location location, double health, int food, float saturation) {
-            this.time = System.currentTimeMillis();
-            this.location = location;
-            this.health = health;
-            this.food = food;
-            this.saturation = saturation;
-        }
-    }
-
-    private static class BlockSnapshot {
-        final long time;
-        final BlockState state;
-
-        BlockSnapshot(long time, BlockState state) {
-            this.time = time;
-            this.state = state;
-        }
-    }
-}
+      - name: Upload plugin JAR
+        uses: actions/upload-artifact@v4
+        with:
+          name: RewindPlugin
+          path: target/*.jar
